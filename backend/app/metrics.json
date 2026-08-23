@@ -1,0 +1,17 @@
+{
+  "features": [
+    "Amount",
+    "tx_count_24h",
+    "minutes_since_last_tx",
+    "amount_vs_card_avg",
+    "is_odd_hour"
+  ],
+  "auc": 0.9035,
+  "precision": 0.7053,
+  "recall": 0.5877,
+  "threshold": 0.8553,
+  "fp_cost_assumption": 50,
+  "fn_cost_assumption": 183.3,
+  "estimated_total_cost": 10015.12,
+  "test_set_size": 2226
+}

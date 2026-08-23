@@ -1,0 +1,9 @@
+# .gitignore
+.env
+*.env
+__pycache__/
+*.pyc
+node_modules/
+.next/
+ml/data/raw/*.csv
+.DS_Store
