@@ -359,7 +359,7 @@ export default function Dashboard() {
                 Global feature importance
               </h3>
               <p className="text-sm mb-3" style={{ color: "var(--ink-dim)" }}>
-                Overall feature influence across the model's training data
+                Overall feature influence across the model&apos;s training data
               </p>
               <div className="space-y-1.5">
                 {globalImportance.map(([name, value]) => (
