@@ -56,7 +56,7 @@ try:
       "tx_count_24h": 5,
       "minutes_since_last_tx": 1.5,
       "amount_vs_card_avg": 0.4,
-      "is_odd_hour": True
+    "transaction_time": "2026-08-25T02:00:00Z"
     }
     response = client.post("/score", json=score_payload)
     print(f"Status Code: {response.status_code}")
