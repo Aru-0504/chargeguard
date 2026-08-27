@@ -24,6 +24,22 @@ class Decision(Base):
     threshold_used = Column(Float)
     top_reasons = Column(Text)     # SHAP-driven reasons, JSON string
     evidence_packet = Column(Text, nullable=True)
+    model_version_id = Column(Integer, nullable=True)  # Foreign key to ModelVersion
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class ModelVersion(Base):
+    __tablename__ = "model_versions"
+    id = Column(Integer, primary_key=True, index=True)
+    version_name = Column(String, unique=True, index=True)  # e.g., "v1.0.0"
+    model_file_path = Column(String)  # Path to the model file
+    metrics_file_path = Column(String)  # Path to the metrics file
+    features = Column(Text)  # JSON string of feature list
+    threshold = Column(Float)  # Decision threshold
+    auc = Column(Float, nullable=True)  # Model performance metric
+    precision = Column(Float, nullable=True)
+    recall = Column(Float, nullable=True)
+    training_date = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=True)  # Whether this is the current production model
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class AuditLog(Base):

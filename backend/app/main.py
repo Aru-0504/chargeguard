@@ -18,10 +18,10 @@ from agent.evidence_agent import EvidenceAgent
 
 try:
     from app.db import init_db, SessionLocal
-    from app.models import Transaction, Decision, AuditLog
+    from app.models import Transaction, Decision, AuditLog, ModelVersion
 except ImportError:
     from db import init_db, SessionLocal
-    from models import Transaction, Decision, AuditLog
+    from models import Transaction, Decision, AuditLog, ModelVersion
 
 app = FastAPI(title="Chargeback Evidence Responder API")
 
@@ -301,3 +301,151 @@ def get_audit(decision_id: int, db: Session = Depends(get_db)):
 @app.get("/metrics")
 def get_metrics():
     return metrics_data
+
+@app.get("/model/global-importance")
+def get_global_feature_importance():
+    """
+    Get global SHAP feature importance across the training dataset.
+    This shows which features are most influential overall for the model.
+    """
+    try:
+        # Calculate global SHAP values using a sample of the training data
+        # For now, we'll use the mean absolute SHAP values from the explainer
+        # In production, this should be pre-computed and stored
+        
+        # Get feature importance from the model if available
+        if hasattr(model, 'feature_importances_'):
+            importance = dict(zip(FEATURE_ORDER, model.feature_importances_))
+        else:
+            # Fallback: use SHAP explainer on a synthetic sample
+            sample_data = pd.DataFrame([{
+                'Amount': 100.0,
+                'tx_count_24h': 2,
+                'minutes_since_last_tx': 30.0,
+                'amount_vs_card_avg': 0.1,
+                'is_odd_hour': 0
+            }], columns=FEATURE_ORDER)
+            
+            shap_values = explainer.shap_values(sample_data)
+            row_shap = shap_values[1][0] if isinstance(shap_values, list) else shap_values[0]
+            importance = dict(zip(FEATURE_ORDER, np.abs(row_shap)))
+        
+        # Normalize to percentages
+        total = sum(importance.values())
+        normalized = {k: (v / total * 100) if total > 0 else 0 for k, v in importance.items()}
+        
+        # Sort by importance
+        sorted_importance = sorted(normalized.items(), key=lambda x: x[1], reverse=True)
+        
+        return {
+            "feature_importance": sorted_importance,
+            "model_threshold": THRESHOLD,
+            "features": FEATURE_ORDER
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to calculate global importance: {str(e)}")
+
+class CounterfactualRequest(BaseModel):
+    amount: float
+    tx_count_24h: int
+    minutes_since_last_tx: float
+    amount_vs_card_avg: float
+    is_odd_hour: bool
+
+@app.post("/model/counterfactual")
+def get_counterfactual_explanations(req: CounterfactualRequest):
+    """
+    Generate counterfactual explanations using DiCE.
+    Shows what changes to the input would flip the model's decision.
+    """
+    try:
+        import dice_ml
+        from dice_ml.utils import helper
+        
+        # Create a DiCE dataset with the current transaction
+        data_interface = dice_ml.Data(
+            dataframe=pd.DataFrame([{
+                'Amount': req.amount,
+                'tx_count_24h': req.tx_count_24h,
+                'minutes_since_last_tx': req.minutes_since_last_tx,
+                'amount_vs_card_avg': req.amount_vs_card_avg,
+                'is_odd_hour': int(req.is_odd_hour)
+            }], columns=FEATURE_ORDER),
+            continuous_features=['Amount', 'minutes_since_last_tx', 'amount_vs_card_avg'],
+            outcome_name='fraud_probability'
+        )
+        
+        # Create DiCE model interface
+        model_interface = dice_ml.Model(model=model, backend='sklearn')
+        
+        # Initialize DiCE explainer
+        exp = dice_ml.Dice(data_interface, model_interface, method='random')
+        
+        # Generate counterfactuals
+        input_df = pd.DataFrame([{
+            'Amount': req.amount,
+            'tx_count_24h': req.tx_count_24h,
+            'minutes_since_last_tx': req.minutes_since_last_tx,
+            'amount_vs_card_avg': req.amount_vs_card_avg,
+            'is_odd_hour': int(req.is_odd_hour)
+        }], columns=FEATURE_ORDER)
+        
+        # Generate 3 counterfactual examples
+        counterfactuals = exp.generate_counterfactuals(
+            input_df, 
+            total_CFs=3,
+            desired_class="opposite",
+            features_to_vary=['Amount', 'tx_count_24h', 'minutes_since_last_tx', 'amount_vs_card_avg']
+        )
+        
+        # Format the response
+        if counterfactuals is not None and len(counterfactuals) > 0:
+            cf_list = []
+            for _, cf in counterfactuals.iterrows():
+                cf_list.append({
+                    'amount': float(cf['Amount']),
+                    'tx_count_24h': int(cf['tx_count_24h']),
+                    'minutes_since_last_tx': float(cf['minutes_since_last_tx']),
+                    'amount_vs_card_avg': float(cf['amount_vs_card_avg']),
+                    'is_odd_hour': bool(cf['is_odd_hour'])
+                })
+            
+            return {
+                "original": {
+                    'amount': req.amount,
+                    'tx_count_24h': req.tx_count_24h,
+                    'minutes_since_last_tx': req.minutes_since_last_tx,
+                    'amount_vs_card_avg': req.amount_vs_card_avg,
+                    'is_odd_hour': req.is_odd_hour
+                },
+                "counterfactuals": cf_list,
+                "explanation": "These are alternative scenarios that would change the model's decision"
+            }
+        else:
+            return {
+                "original": {
+                    'amount': req.amount,
+                    'tx_count_24h': req.tx_count_24h,
+                    'minutes_since_last_tx': req.minutes_since_last_tx,
+                    'amount_vs_card_avg': req.amount_vs_card_avg,
+                    'is_odd_hour': req.is_odd_hour
+                },
+                "counterfactuals": [],
+                "explanation": "Could not generate counterfactuals for this input"
+            }
+            
+    except ImportError:
+        # Fallback if DiCE is not installed
+        return {
+            "error": "DiCE library not installed. Install with: pip install dice",
+            "original": {
+                'amount': req.amount,
+                'tx_count_24h': req.tx_count_24h,
+                'minutes_since_last_tx': req.minutes_since_last_tx,
+                'amount_vs_card_avg': req.amount_vs_card_avg,
+                'is_odd_hour': req.is_odd_hour
+            },
+            "counterfactuals": []
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate counterfactuals: {str(e)}")
