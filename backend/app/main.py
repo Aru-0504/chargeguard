@@ -434,10 +434,10 @@ def get_counterfactual_explanations(req: CounterfactualRequest):
                 "explanation": "Could not generate counterfactuals for this input"
             }
             
-    except ImportError:
+    except ImportError as e:
         # Fallback if DiCE is not installed
         return {
-            "error": "DiCE library not installed. Install with: pip install dice",
+            "error": f"DiCE library not installed or import failed: {str(e)}. Install with: pip install dice-ml",
             "original": {
                 'amount': req.amount,
                 'tx_count_24h': req.tx_count_24h,

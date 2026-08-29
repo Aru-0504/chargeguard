@@ -16,17 +16,23 @@ from sklearn.metrics import roc_auc_score, precision_score, recall_score, classi
 import lightgbm as lgb
 import shap
 
+# Set SQLite fallback for testing before any db imports
+os.environ["DATABASE_URL"] = "sqlite:///./test.db"
+
 # Add parent directory to path for imports
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
 try:
-    from app.db import SessionLocal
+    from app.db import SessionLocal, init_db
     from app.models import Transaction, Decision, ModelVersion
 except ImportError:
-    from db import SessionLocal
+    from db import SessionLocal, init_db
     from models import Transaction, Decision, ModelVersion
+
+# Initialize database tables
+init_db()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "app", "chargeback_model.pkl")

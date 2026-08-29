@@ -8,3 +8,6 @@ node_modules/
 .next/
 ml/data/raw/*.csv
 .DS_Store
+backend/app/*.pkl
+backend/app/*_v*.json
+backend/app/test.db

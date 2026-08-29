@@ -11,4 +11,4 @@ lightgbm
 httpx
 langgraph
 openai
-dice
+dice-ml
