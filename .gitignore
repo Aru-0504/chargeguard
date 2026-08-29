@@ -11,3 +11,5 @@ ml/data/raw/*.csv
 backend/app/*.pkl
 backend/app/*_v*.json
 backend/app/test.db
+backend/test.db
+frontend/next-env.d.ts
