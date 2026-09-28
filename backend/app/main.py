@@ -25,14 +25,13 @@ except ImportError:
 
 app = FastAPI(title="Chargeback Evidence Responder API")
 
+# Configure CORS from environment variable or use defaults
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001")
+cors_origins_list = [origin.strip() for origin in cors_origins.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-    ],
+    allow_origins=cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,6 +70,10 @@ def startup():
         init_db()   # creates the 3 tables in your Neon DB the first time this runs
     except Exception as e:
         print(f"Warning: Could not initialize database at startup: {e}")
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 def get_db():
     db = SessionLocal()
