@@ -1,9 +1,10 @@
 # Railway configuration for ChargeGuard
 # This configures the backend service. Deploy frontend separately.
+# IMPORTANT: Remove any rootDirectory setting in Railway - this uses the root Dockerfile
 
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "backend/Dockerfile"
+dockerfilePath = "Dockerfile"
 dockerContext = "."
 
 [deploy]
