@@ -7,6 +7,7 @@ export type ScoreRequest = {
   minutes_since_last_tx: number;
   amount_vs_card_avg: number;
   transaction_time: string;
+  reason_code?: string;
 };
 
 export type ScoreResponse = {
@@ -15,6 +16,7 @@ export type ScoreResponse = {
   score: number;
   decision: "fight" | "auto_refund";
   top_reasons: [string, number][];
+  reason_code?: string;
 };
 
 export type DecisionDetail = {
@@ -25,6 +27,7 @@ export type DecisionDetail = {
   decision: string;
   threshold_used: number;
   top_reasons: [string, number][];
+  reason_code?: string;
   evidence_packet: string | null;
   created_at: string;
   transaction?: {
@@ -59,6 +62,50 @@ export type TransactionRow = {
   created_at: string;
 };
 
+export type ReasonCodeOption = {
+  code: string;
+  name: string;
+  network: "Visa" | "Mastercard";
+  category: string;
+  description: string;
+  default_win_rate: number;
+  ce3_eligible: boolean;
+};
+
+export type CounterfactualScenario = {
+  amount: number;
+  tx_count_24h: number;
+  minutes_since_last_tx: number;
+  amount_vs_card_avg: number;
+  is_odd_hour: boolean;
+};
+
+export type CounterfactualRequest = {
+  amount: number;
+  tx_count_24h: number;
+  minutes_since_last_tx: number;
+  amount_vs_card_avg: number;
+  is_odd_hour: boolean;
+};
+
+export type CounterfactualResponse = {
+  original: CounterfactualScenario;
+  counterfactuals: CounterfactualScenario[];
+  explanation: string;
+};
+
+export type AgentStepEvent = {
+  type: "step" | "complete";
+  step?: "assemble" | "strategy" | "draft" | "self_check";
+  title?: string;
+  detail?: string;
+  decision_id?: number;
+  reason_code?: string;
+  final_evidence?: string;
+  is_valid?: boolean;
+  graceful_decline?: boolean;
+};
+
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -85,10 +132,74 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ evidence_packet }),
     }),
-  generateEvidence: (id: number) =>
-    req<{ final_evidence: string; is_valid: boolean; graceful_decline: boolean; decision_id: number }>(`/agent/generate-evidence/${id}`, {
+  generateEvidence: (id: number, reason_code?: string) =>
+    req<{ final_evidence: string; is_valid: boolean; graceful_decline: boolean; decision_id: number; reason_code?: string }>(
+      `/agent/generate-evidence/${id}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason_code }),
+      }
+    ),
+  generateEvidenceStream: async (
+    id: number,
+    reason_code: string,
+    onStep: (event: AgentStepEvent) => void,
+    onComplete: (event: AgentStepEvent) => void,
+    onError: (err: Error) => void
+  ) => {
+    try {
+      const response = await fetch(`${API_BASE}/agent/generate-evidence-stream/${id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason_code }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Streaming failed: HTTP ${response.status}`);
+      }
+
+      if (!response.body) {
+        throw new Error("No response body for streaming");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const block of lines) {
+          const trimmed = block.trim();
+          if (trimmed.startsWith("data:")) {
+            try {
+              const data: AgentStepEvent = JSON.parse(trimmed.replace(/^data:\s*/, ""));
+              if (data.type === "step") {
+                onStep(data);
+              } else if (data.type === "complete") {
+                onComplete(data);
+              }
+            } catch (err) {
+              console.error("Failed to parse SSE data block", err, block);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err : new Error(String(err)));
+    }
+  },
+  counterfactual: (payload: CounterfactualRequest) =>
+    req<CounterfactualResponse>("/model/counterfactual", {
       method: "POST",
+      body: JSON.stringify(payload),
     }),
+  reasonCodes: () => req<ReasonCodeOption[]>("/agent/reason-codes"),
   audit: (id: number) => req<AuditEntry[]>(`/audit/${id}`),
   metrics: () => req<Metrics>("/metrics"),
   globalImportance: () =>

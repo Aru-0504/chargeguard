@@ -135,23 +135,35 @@ try:
     assert "feature_importance" in importance
     assert "model_threshold" in importance
 
-    # 8. POST /agent/generate-evidence/{decision_id} (skip if no OpenAI key)
-    print("\n8. Testing POST /agent/generate-evidence/{decision_id}...")
-    import os
-    if not os.environ.get("OPENAI_API_KEY"):
-        print("Skipping: OPENAI_API_KEY not set")
-    else:
-        response = client.post(f"/agent/generate-evidence/{decision_id}")
-        print(f"Status Code: {response.status_code}")
-        if response.status_code == 200:
-            agent_result = response.json()
-            print(f"Agent Result: {agent_result}")
-            assert "final_evidence" in agent_result or "graceful_decline" in agent_result
-        else:
-            print(f"Agent endpoint returned {response.status_code} (may be expected without valid OpenAI key)")
+    # 8. GET /agent/reason-codes
+    print("\n8. Testing GET /agent/reason-codes...")
+    response = client.get("/agent/reason-codes")
+    print(f"Status Code: {response.status_code}")
+    assert response.status_code == 200
+    rc_list = response.json()
+    assert len(rc_list) >= 4
+    print(f"Loaded {len(rc_list)} Card Scheme Reason Codes successfully!")
 
-    # 9. POST /model/counterfactual
-    print("\n9. Testing POST /model/counterfactual...")
+    # 9. POST /agent/generate-evidence/{decision_id}
+    print("\n9. Testing POST /agent/generate-evidence/{decision_id}...")
+    response = client.post(f"/agent/generate-evidence/{decision_id}", json={"reason_code": "Visa 10.4 - Fraud: Card-Absent Environment"})
+    print(f"Status Code: {response.status_code}")
+    assert response.status_code == 200
+    agent_result = response.json()
+    assert "final_evidence" in agent_result
+    assert "reason_code" in agent_result
+    print("Evidence generated successfully!")
+
+    # 10. POST /agent/generate-evidence-stream/{decision_id}
+    print("\n10. Testing POST /agent/generate-evidence-stream/{decision_id}...")
+    response = client.post(f"/agent/generate-evidence-stream/{decision_id}", json={"reason_code": "Visa 10.4 - Fraud: Card-Absent Environment"})
+    print(f"Status Code: {response.status_code}")
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers.get("content-type", "")
+    print("Streaming endpoint returned event-stream successfully!")
+
+    # 11. POST /model/counterfactual
+    print("\n11. Testing POST /model/counterfactual...")
     counterfactual_payload = {
         "amount": 172.5,
         "tx_count_24h": 5,
@@ -161,14 +173,14 @@ try:
     }
     response = client.post("/model/counterfactual", json=counterfactual_payload)
     print(f"Status Code: {response.status_code}")
-    if response.status_code == 200:
-        cf_result = response.json()
-        print(f"Counterfactual Result: {cf_result}")
-        assert "original" in cf_result
-        assert "counterfactuals" in cf_result
-    else:
-        print(f"Counterfactual endpoint returned {response.status_code} (DiCE library may not be installed)")
-    
+    assert response.status_code == 200
+    cf_result = response.json()
+    print(f"Counterfactual Result: {cf_result}")
+    assert "original" in cf_result
+    assert "counterfactuals" in cf_result
+    assert len(cf_result["counterfactuals"]) > 0
+    print(f"Generated {len(cf_result['counterfactuals'])} counterfactual scenarios!")
+
     print("\n=========================================")
     print("SUCCESS: ALL ENDPOINTS VERIFIED AND WORKING!")
     print("=========================================")

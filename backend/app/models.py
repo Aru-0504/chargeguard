@@ -23,6 +23,7 @@ class Decision(Base):
     decision = Column(String)      # "fight" or "auto_refund"
     threshold_used = Column(Float)
     top_reasons = Column(Text)     # SHAP-driven reasons, JSON string
+    reason_code = Column(String, nullable=True)  # Dispute reason code, e.g. "Visa 10.4"
     evidence_packet = Column(Text, nullable=True)
     model_version_id = Column(Integer, nullable=True)  # Foreign key to ModelVersion
     created_at = Column(DateTime, default=datetime.utcnow)
