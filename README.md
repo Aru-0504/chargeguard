@@ -161,10 +161,3 @@ The repository's implemented milestones are:
 3. **Agentic evidence generation** (`de8a90b`): added the LangGraph evidence workflow, GPT-4o drafting/self-checking, fallback behavior, evidence endpoints, audit logging, and required dependencies.
 4. **ModelOps and explainability** (`686b4c4`, current `main`): added the retraining/version-registration pipeline, model metrics and threshold handling, SHAP explanations, global feature importance, counterfactual support, the full Next.js review dashboard, case history, editable evidence, and PDF export.
 
-## Recommended Next Steps
-
-- Capture verified merchant outcomes and use them as labels instead of synthetic/heuristic labels.
-- Store and activate model versions atomically, and attach the active version to each decision.
-- Replace simulated evidence fields with validated integrations and preserve provenance for every field.
-- Add authentication, authorization, secret management, sensitive-data redaction, and rate limiting.
-- Add automated backend and frontend tests around scoring, evidence refusal for `auto_refund`, model promotion, and PDF generation.
