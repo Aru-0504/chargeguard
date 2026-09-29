@@ -181,6 +181,48 @@ try:
     assert len(cf_result["counterfactuals"]) > 0
     print(f"Generated {len(cf_result['counterfactuals'])} counterfactual scenarios!")
 
+    # 12. Seed and test GET /model/versions
+    print("\n12. Testing GET /model/versions...")
+    from db import SessionLocal
+    from models import ModelVersion
+    test_db = SessionLocal()
+    candidate_model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chargeback_model_v20260929_164908.pkl")
+    candidate_metrics_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics_v20260929_164908.json")
+    if os.path.exists(candidate_model_path) and os.path.exists(candidate_metrics_path):
+        existing = test_db.query(ModelVersion).filter(ModelVersion.version_name == "v20260929_164908").first()
+        if not existing:
+            sample_mv = ModelVersion(
+                version_name="v20260929_164908",
+                model_file_path=candidate_model_path,
+                metrics_file_path=candidate_metrics_path,
+                features='["Amount", "tx_count_24h", "minutes_since_last_tx", "amount_vs_card_avg", "is_odd_hour"]',
+                threshold=0.8553,
+                auc=0.9035,
+                precision=0.7053,
+                recall=0.5877,
+                is_active=False
+            )
+            test_db.add(sample_mv)
+            test_db.commit()
+    test_db.close()
+
+    response = client.get("/model/versions")
+    print(f"Status Code: {response.status_code}")
+    assert response.status_code == 200
+    versions = response.json()
+    print(f"Registered model versions: {len(versions)}")
+
+    # 13. Test Model Promotion if any version exists
+    if versions:
+        test_version = versions[0]["version_name"]
+        print(f"\n13. Testing POST /model/promote/{test_version}...")
+        response = client.post(f"/model/promote/{test_version}")
+        print(f"Status Code: {response.status_code}")
+        assert response.status_code == 200
+        promote_result = response.json()
+        assert promote_result["status"] == "success"
+        print(f"Successfully verified model promotion for {test_version}!")
+
     print("\n=========================================")
     print("SUCCESS: ALL ENDPOINTS VERIFIED AND WORKING!")
     print("=========================================")

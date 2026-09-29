@@ -52,6 +52,19 @@ export type Metrics = {
   test_set_size: number;
 };
 
+export type ModelVersionItem = {
+  id: number;
+  version_name: string;
+  threshold: number;
+  auc: number;
+  precision: number;
+  recall: number;
+  training_date: string | null;
+  is_active: boolean;
+  created_at: string | null;
+  model_file: string | null;
+};
+
 export type TransactionRow = {
   transaction_id: number;
   card_number: string;
@@ -94,6 +107,19 @@ export type CounterfactualResponse = {
   explanation: string;
 };
 
+export type ValidationReport = {
+  ce3_eligible?: boolean;
+  ce3_score?: number;
+  matched_elements?: string[];
+  liability_shift_secured?: boolean;
+  eci_code?: string;
+  pod_verified?: boolean;
+  tracking_number?: string;
+  fact_audit_passed?: boolean;
+  win_probability?: number;
+  audit_notes?: string[];
+};
+
 export type AgentStepEvent = {
   type: "step" | "complete";
   step?: "assemble" | "strategy" | "draft" | "self_check";
@@ -104,6 +130,7 @@ export type AgentStepEvent = {
   final_evidence?: string;
   is_valid?: boolean;
   graceful_decline?: boolean;
+  validation_report?: ValidationReport;
 };
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
@@ -202,6 +229,12 @@ export const api = {
   reasonCodes: () => req<ReasonCodeOption[]>("/agent/reason-codes"),
   audit: (id: number) => req<AuditEntry[]>(`/audit/${id}`),
   metrics: () => req<Metrics>("/metrics"),
+  modelVersions: () => req<ModelVersionItem[]>("/model/versions"),
+  promoteModelVersion: (versionName: string) =>
+    req<{ status: string; message: string; active_version: string; metrics: Metrics }>(
+      `/model/promote/${versionName}`,
+      { method: "POST" }
+    ),
   globalImportance: () =>
     req<{ feature_importance: [string, number][]; model_threshold: number; features: string[] }>("/model/global-importance"),
 };

@@ -15,8 +15,13 @@ import pandas as pd
 import numpy as np
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if PROJECT_DIR not in sys.path:
-    sys.path.insert(0, PROJECT_DIR)
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+for p in [PROJECT_DIR, BACKEND_DIR, APP_DIR]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 from agent.evidence_agent import EvidenceAgent
 
 try:
@@ -66,6 +71,17 @@ if not os.path.exists(MODEL_PATH):
 model = joblib.load(MODEL_PATH)
 explainer = shap.TreeExplainer(model)
 evidence_agent = EvidenceAgent()
+
+def reload_model():
+    """Hot-reload model, explainer, and metrics into memory after promotion."""
+    global model, explainer, metrics_data, THRESHOLD, FEATURE_ORDER
+    with open(METRICS_PATH, "r") as f:
+        metrics_data = json.load(f)
+    FEATURE_ORDER = metrics_data.get("features", FEATURE_ORDER)
+    THRESHOLD = metrics_data.get("threshold", 0.8553)
+    model = joblib.load(MODEL_PATH)
+    explainer = shap.TreeExplainer(model)
+
 
 @app.on_event("startup")
 def startup():
@@ -326,32 +342,44 @@ def generate_evidence_with_agent(decision_id: int, payload: Optional[GenerateEvi
 
     reason_code = (payload.reason_code if payload and payload.reason_code else getattr(decision, "reason_code", None)) or "Visa 10.4 - Fraud: Card-Absent Environment"
 
+    txn = db.query(Transaction).filter(Transaction.id == decision.transaction_id).first()
+    txn_data = {
+        "amount": txn.amount,
+        "card_number": txn.card_number,
+        "created_at": str(txn.created_at) if txn.created_at else None
+    } if txn else None
+
     try:
         top_reasons = json.loads(decision.top_reasons)
         result = evidence_agent.generate_evidence(
             decision_id=decision.id,
             top_reasons=top_reasons,
-            reason_code=reason_code
+            reason_code=reason_code,
+            transaction_data=txn_data
         )
-        
+
         decision.evidence_packet = result["final_evidence"]
         decision.reason_code = reason_code
         db.commit()
-        
+
+        val_report = result.get("validation_report", {})
+        win_prob = val_report.get("win_probability", 0.50)
+
         log = AuditLog(
             decision_id=decision.id,
             event="evidence_generated",
-            detail=f"reason_code={reason_code}, agent_generated={result['is_valid']}, graceful_decline={result['graceful_decline']}"
+            detail=f"reason_code={reason_code}, valid={result['is_valid']}, win_prob={win_prob:.2f}, ce3={val_report.get('ce3_eligible')}"
         )
         db.add(log)
         db.commit()
-        
+
         return {
             "final_evidence": result["final_evidence"],
             "is_valid": result["is_valid"],
             "graceful_decline": result["graceful_decline"],
             "decision_id": decision_id,
-            "reason_code": reason_code
+            "reason_code": reason_code,
+            "validation_report": val_report
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Evidence generation failed: {str(e)}")
@@ -364,18 +392,26 @@ def stream_evidence_generation(decision_id: int, payload: Optional[GenerateEvide
     decision = db.query(Decision).filter(Decision.id == decision_id).first()
     if not decision:
         raise HTTPException(status_code=404, detail="Decision not found")
-    
+
     if decision.decision != "fight":
         raise HTTPException(status_code=400, detail="Evidence generation is only allowed for 'fight' decisions")
 
     reason_code = (payload.reason_code if payload and payload.reason_code else getattr(decision, "reason_code", None)) or "Visa 10.4 - Fraud: Card-Absent Environment"
     top_reasons = json.loads(decision.top_reasons)
 
+    txn = db.query(Transaction).filter(Transaction.id == decision.transaction_id).first()
+    txn_data = {
+        "amount": txn.amount,
+        "card_number": txn.card_number,
+        "created_at": str(txn.created_at) if txn.created_at else None
+    } if txn else None
+
     def event_stream():
         step_generator = evidence_agent.generate_evidence_stream(
             decision_id=decision.id,
             top_reasons=top_reasons,
-            reason_code=reason_code
+            reason_code=reason_code,
+            transaction_data=txn_data
         )
         for item in step_generator:
             time.sleep(0.35)  # Subtle pacing for UI visualization of agent reasoning
@@ -410,6 +446,59 @@ def get_audit(decision_id: int, db: Session = Depends(get_db)):
 @app.get("/metrics")
 def get_metrics():
     return metrics_data
+
+@app.get("/model/versions")
+def get_model_versions(db: Session = Depends(get_db)):
+    """Return all registered model versions from the database."""
+    versions = db.query(ModelVersion).order_by(ModelVersion.created_at.desc()).all()
+    return [
+        {
+            "id": v.id,
+            "version_name": v.version_name,
+            "threshold": v.threshold,
+            "auc": v.auc,
+            "precision": v.precision,
+            "recall": v.recall,
+            "training_date": str(v.training_date) if v.training_date else None,
+            "is_active": bool(v.is_active),
+            "created_at": str(v.created_at) if v.created_at else None,
+            "model_file": os.path.basename(v.model_file_path) if v.model_file_path else None
+        }
+        for v in versions
+    ]
+
+@app.post("/model/promote/{version_name}")
+def promote_model_version(version_name: str, db: Session = Depends(get_db)):
+    """
+    Promote a registered model version to active production.
+    Copies model and metrics files and hot-reloads the active model in memory.
+    """
+    import shutil
+    target = db.query(ModelVersion).filter(ModelVersion.version_name == version_name).first()
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Model version '{version_name}' not found")
+
+    if not os.path.exists(target.model_file_path):
+        raise HTTPException(status_code=400, detail=f"Model file not found on disk: {target.model_file_path}")
+    if not os.path.exists(target.metrics_file_path):
+        raise HTTPException(status_code=400, detail=f"Metrics file not found on disk: {target.metrics_file_path}")
+
+    shutil.copy(target.model_file_path, MODEL_PATH)
+    shutil.copy(target.metrics_file_path, METRICS_PATH)
+
+    db.query(ModelVersion).update({ModelVersion.is_active: False})
+    target.is_active = True
+    db.commit()
+
+    reload_model()
+
+    return {
+        "status": "success",
+        "message": f"Successfully promoted version '{version_name}' to production",
+        "active_version": version_name,
+        "metrics": metrics_data
+    }
+
 
 @app.get("/model/global-importance")
 def get_global_feature_importance():

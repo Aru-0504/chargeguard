@@ -1,4 +1,5 @@
 {
+  "version": "v20260929_164908",
   "features": [
     "Amount",
     "tx_count_24h",
@@ -6,12 +7,15 @@
     "amount_vs_card_avg",
     "is_odd_hour"
   ],
+  "threshold": 0.8553,
   "auc": 0.9035,
   "precision": 0.7053,
   "recall": 0.5877,
-  "threshold": 0.8553,
-  "fp_cost_assumption": 50,
+  "fp_cost_assumption": 50.0,
   "fn_cost_assumption": 183.3,
-  "estimated_total_cost": 10015.12,
-  "test_set_size": 2226
+  "estimated_total_cost": 10015.1,
+  "test_set_size": 2226,
+  "data_source": "processed_csv (11127 records)",
+  "training_date": "2026-09-29T16:49:08.252013",
+  "model_file": "chargeback_model_v20260929_164908.pkl"
 }
