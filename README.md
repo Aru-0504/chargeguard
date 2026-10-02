@@ -71,16 +71,20 @@ The backend runs at `http://localhost:8000` by default and exposes FastAPI docum
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/score` | Store and score a transaction; returns the decision and SHAP reasons. |
+| `POST` | `/score` | Store and score a transaction; returns the decision, SHAP reasons, and active `model_version_id`. |
 | `GET` | `/transactions?limit=20` | List recent scored transactions. |
-| `GET` | `/decisions/{decision_id}` | Return a decision, transaction summary, reasons, and evidence. |
+| `GET` | `/decisions/{decision_id}` | Return a decision, transaction summary, reasons, evidence, and outcome. |
+| `POST` | `/decisions/{decision_id}/outcome` | Record real-world dispute outcome (`won`, `lost`, `withdrawn`, `pending`). |
+| `GET` | `/decisions/outcomes/summary` | Return dispute win rate and case outcome counts. |
 | `POST` | `/evidence/{decision_id}` | Save reviewer-edited evidence for a `fight` case. |
-| `POST` | `/agent/generate-evidence/{decision_id}` | Generate and save agent-produced evidence. |
-| `POST` | `/evidence/{decision_id}/generate` | Legacy alias for agent evidence generation. |
+| `POST` | `/agent/generate-evidence/{decision_id}` | Generate and save agent-produced evidence with multi-source validation. |
+| `POST` | `/agent/generate-evidence-stream/{decision_id}` | Stream real-time agent reasoning and fact-checking via SSE. |
 | `GET` | `/audit/{decision_id}` | Return the case audit events. |
 | `GET` | `/metrics` | Return the serving model metrics and assumptions. |
 | `GET` | `/model/global-importance` | Return normalized global feature importance. |
 | `POST` | `/model/counterfactual` | Request scenarios intended to flip the model decision. |
+| `GET` | `/model/versions` | List registered model versions and validation metrics. |
+| `POST` | `/model/promote/{version_name}` | Hot-promote a trained model version into active production. |
 
 The score request contains `card_number`, `amount`, `tx_count_24h`, `minutes_since_last_tx`, `amount_vs_card_avg`, and an ISO `transaction_time`.
 
@@ -140,16 +144,15 @@ The serving feature order is:
 4. `amount_vs_card_avg`
 5. `is_odd_hour`
 
-The checked-in training/retraining flow is demonstrative. If the database contains more than 100 transactions, the retraining script reads their features but still derives labels from a heuristic. Otherwise it generates synthetic data. Actual confirmed chargeback outcomes are not currently recorded or used for training.
+The checked-in training/retraining flow supports processed CSVs, raw transaction logs, database transactions with real dispute outcome feedback, and synthetic fallbacks. When transactions have recorded dispute outcomes (`won` or `lost`), the retraining pipeline incorporates these confirmed ground-truth labels directly into model training.
 
 ## Important Limitations
 
-- The evidence agent's merchant, order, device, account-age, shipping/billing, and IP fields are deterministic simulated enrichment. They are not connected to merchant or payment data and must not be treated as authoritative evidence.
-- The fallback evidence packet is not an LLM-generated submission and is explicitly marked as such.
-- Authentication, authorization, rate limiting, pagination beyond a simple limit, and production integrations are not implemented.
+- The evidence agent's merchant, order, device, account-age, shipping/billing, and IP adapters can accept real caller/webhook data or fall back to reproducible simulated enrichment when external integration credentials are not set.
+- The fallback evidence packet is synthesized programmatically when OpenAI keys are unavailable or rate-limited.
+- Authentication, authorization, rate limiting, and PCI DSS payment tokenization vaulting are not implemented.
 - Card identifiers are stored as submitted; production handling should use tokenization or stricter redaction and access controls.
-- Retraining registers a model version, but the serving process loads the static `chargeback_model.pkl` and `metrics.json` files at import time. Decisions do not currently attach a `model_version_id`.
-- Counterfactual and metrics routes exist, but the dashboard currently uses global importance only; it does not expose the counterfactual workflow.
+- Model versions are tracked with `model_version_id` on scored decisions, and retrained versions can be hot-promoted into production via `/model/promote/{version_name}`.
 - Database initialization catches startup failures and can fall back to local SQLite when `DATABASE_URL` is missing. Configure the intended database explicitly before relying on persistence.
 
 ## Project History

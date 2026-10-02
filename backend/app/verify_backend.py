@@ -1,5 +1,10 @@
 import sys
 import os
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*InconsistentVersionWarning.*")
+warnings.filterwarnings("ignore", message=".*Could not find the number of physical cores.*")
 
 # Set SQLite fallback for testing before any db imports
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
@@ -67,8 +72,9 @@ try:
     assert response.status_code == 200
     res_data = response.json()
     decision_id = res_data["decision_id"]
-    print(f"Decision ID: {decision_id}, Decision: {res_data['decision']}")
+    print(f"Decision ID: {decision_id}, Decision: {res_data['decision']}, Model: {res_data.get('model_version_name')}")
     assert res_data["decision"] == "fight"
+    assert "model_version_name" in res_data
     
     # 2. GET /transactions
     print("\n2. Testing GET /transactions...")
@@ -90,7 +96,8 @@ try:
     assert response.status_code == 200
     assert dec_data["id"] == decision_id
     assert "top_reasons" in dec_data
-    print("SHAP reasons loaded successfully.")
+    assert "model_version_id" in dec_data
+    print("SHAP reasons and model_version_id verified successfully.")
 
     # 4. POST /evidence/{decision_id}
     print(f"\n4. Testing POST /evidence/{decision_id}...")
@@ -100,6 +107,19 @@ try:
     print(f"Response: {response.json()}")
     assert response.status_code == 200
     assert response.json()["status"] == "success"
+
+    # 4b. Test Dispute Outcome Recording & Summary
+    print(f"\n4b. Testing POST /decisions/{decision_id}/outcome & Summary...")
+    outcome_payload = {"outcome": "won", "notes": "Merchant won dispute with 3DS proof"}
+    response = client.post(f"/decisions/{decision_id}/outcome", json=outcome_payload)
+    print(f"Status Code: {response.status_code}")
+    assert response.status_code == 200
+    assert response.json()["dispute_outcome"] == "won"
+    
+    summary_resp = client.get("/decisions/outcomes/summary")
+    assert summary_resp.status_code == 200
+    print(f"Dispute Outcomes Summary: {summary_resp.json()}")
+    assert summary_resp.json()["won"] >= 1
 
     # 5. GET /audit/{decision_id}
     print(f"\n5. Testing GET /audit/{decision_id}...")

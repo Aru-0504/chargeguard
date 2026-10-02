@@ -15,10 +15,16 @@ import sys
 import json
 import argparse
 import shutil
+import warnings
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import joblib
+
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*InconsistentVersionWarning.*")
+warnings.filterwarnings("ignore", message=".*Could not find the number of physical cores.*")
+
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     roc_auc_score,
@@ -151,6 +157,7 @@ def load_training_data(source: str = "auto", n_synthetic: int = 1500):
                 print(f"Loading {len(transactions)} historical transactions from database...")
                 data = []
                 labels = []
+                ground_truth_count = 0
                 for txn in transactions:
                     data.append({
                         'Amount': txn.amount,
@@ -159,14 +166,26 @@ def load_training_data(source: str = "auto", n_synthetic: int = 1500):
                         'amount_vs_card_avg': txn.amount_vs_card_avg,
                         'is_odd_hour': int(txn.is_odd_hour)
                     })
-                    score = (
-                        (txn.amount > 100) * 0.3 +
-                        (txn.tx_count_24h > 3) * 0.3 +
-                        (txn.minutes_since_last_tx < 5) * 0.2 +
-                        (txn.amount_vs_card_avg > 0.3) * 0.2
-                    )
-                    labels.append(1 if score > 0.5 else 0)
-                return pd.DataFrame(data), np.array(labels), f"db_transactions ({len(transactions)} records)"
+                    # Check for verified dispute outcome on corresponding decision
+                    dec = db.query(Decision).filter(Decision.transaction_id == txn.id).first()
+                    outcome = getattr(dec, "dispute_outcome", None) if dec else None
+                    if outcome in ("lost", "won"):
+                        # 'lost' dispute confirms true fraud/chargeback (label=1)
+                        # 'won' dispute confirms false chargeback claim (label=0)
+                        labels.append(1 if outcome == "lost" else 0)
+                        ground_truth_count += 1
+                    else:
+                        score = (
+                            (txn.amount > 100) * 0.3 +
+                            (txn.tx_count_24h > 3) * 0.3 +
+                            (txn.minutes_since_last_tx < 5) * 0.2 +
+                            (txn.amount_vs_card_avg > 0.3) * 0.2
+                        )
+                        labels.append(1 if score > 0.5 else 0)
+
+                if ground_truth_count > 0:
+                    print(f"Loaded {ground_truth_count} real dispute outcome labels from feedback loop.")
+                return pd.DataFrame(data), np.array(labels), f"db_transactions ({len(transactions)} records, {ground_truth_count} verified outcomes)"
         except Exception as e:
             print(f"DB load failed: {e}")
         finally:

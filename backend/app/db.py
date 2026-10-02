@@ -47,4 +47,21 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Lightweight automatic migration for existing databases
+    with engine.connect() as conn:
+        try:
+            from sqlalchemy import text
+            for col_sql in [
+                "ALTER TABLE decisions ADD COLUMN model_version_id INTEGER",
+                "ALTER TABLE decisions ADD COLUMN dispute_outcome VARCHAR",
+                "ALTER TABLE decisions ADD COLUMN dispute_outcome_at DATETIME",
+                "ALTER TABLE decisions ADD COLUMN outcome_notes TEXT"
+            ]:
+                try:
+                    conn.execute(text(col_sql))
+                    conn.commit()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 

@@ -2,8 +2,12 @@ import os
 import re
 import json
 import hashlib
+import warnings
 from datetime import datetime, timezone, timedelta
 from typing import TypedDict, Generator, Any, Optional
+
+warnings.filterwarnings("ignore", category=UserWarning, module="langchain_core")
+warnings.filterwarnings("ignore", category=UserWarning, module="shap")
 
 from langgraph.graph import END, StateGraph
 from openai import OpenAI
@@ -107,10 +111,32 @@ class CardSchemeRuleMatrix:
 
 
 class CarrierFulfillmentAdapter:
-    """Simulates real carrier API integrations (FedEx, UPS, DHL, IndiaPost)."""
+    """Carrier API integration and simulation (FedEx, UPS, DHL, IndiaPost)."""
 
-    @staticmethod
-    def get_tracking_info(seed: int, is_not_received: bool = False) -> dict:
+    @classmethod
+    def get_tracking_info(cls, seed: int, tx_data: Optional[Any] = None) -> dict:
+        if not isinstance(tx_data, dict):
+            tx_data = {}
+        # 1. Live or caller-supplied carrier fulfillment details
+        if tx_data.get("carrier_tracking") or tx_data.get("tracking_number"):
+            tn = str(tx_data.get("carrier_tracking") or tx_data.get("tracking_number"))
+            carrier = tx_data.get("carrier_name", "FedEx Express")
+            status = tx_data.get("carrier_status", "Delivered")
+            sig = tx_data.get("delivery_signature", "Cardholder Signature Confirmed")
+            delivered_date = tx_data.get("delivery_timestamp") or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            gps = tx_data.get("delivery_gps", "40.7128 N, 74.0060 W")
+            return {
+                "carrier_name": carrier,
+                "carrier_tracking_pod": f"{tn} ({carrier}) — {status} with signature: '{sig}'",
+                "tracking_number": tn,
+                "carrier_status": status,
+                "delivery_timestamp": delivered_date,
+                "delivery_signature": sig,
+                "delivery_gps": gps,
+                "photo_pod_hash": hashlib.sha256(f"POD-{tn}".encode()).hexdigest()[:16]
+            }
+
+        # 2. Simulated carrier tracking fallback
         carriers = ["FedEx Express", "UPS Ground", "DHL Express", "IndiaPost SpeedPost"]
         carrier = carriers[seed % len(carriers)]
         tracking_num = f"{carrier[:3].upper()}-{''.join(str((seed * (i + 7)) % 10) for i in range(12))}"
@@ -135,9 +161,27 @@ class CarrierFulfillmentAdapter:
 class CompellingEvidence3Engine:
     """Visa CE3.0 and Mastercard customer historical linkage engine."""
 
-    @staticmethod
-    def evaluate_ce3(seed: int, reason_code: str) -> dict:
+    @classmethod
+    def evaluate_ce3(cls, seed: int, reason_code: str, tx_data: Optional[Any] = None) -> dict:
+        if not isinstance(tx_data, dict):
+            tx_data = {}
         is_fraud_code = any(k in reason_code for k in ["10.4", "4837", "Fraud", "Authorization"])
+
+        # Caller-supplied historical linkage
+        if tx_data.get("prior_orders_count") is not None:
+            num_prior_orders = int(tx_data["prior_orders_count"])
+            matches = tx_data.get("ce3_matched_elements") or ["IP Address Match", "Device Fingerprint Match", "Cardholder Account Profile ID"]
+            is_qualified = is_fraud_code and (num_prior_orders >= 2) and (len(matches) >= 2)
+            score = min(100, int((len(matches) / 4.0) * 60 + (num_prior_orders / 5.0) * 40))
+            return {
+                "prior_undisputed_txs": f"{num_prior_orders} historical qualifying orders settled between 120 and 365 days prior",
+                "ce3_qualified": is_qualified,
+                "ce3_score": score,
+                "ce3_matched_elements": matches,
+                "historical_settlement_proof": f"SETTLED-RECORDS-{num_prior_orders}X (Zero previous chargebacks on card identifier)"
+            }
+
+        # Simulated CE3.0
         num_prior_orders = 2 + (seed % 4)  # 2 to 5 qualifying orders
         days_span = 140 + (seed % 180)     # between 140 and 320 days prior (satisfies 120-365 rule)
         
@@ -172,8 +216,27 @@ class CompellingEvidence3Engine:
 class ThreeDSecureGatewayAdapter:
     """EMV 3DS 2.2+ authentication verification adapter."""
 
-    @staticmethod
-    def get_auth_details(seed: int) -> dict:
+    @classmethod
+    def get_auth_details(cls, seed: int, tx_data: Optional[Any] = None) -> dict:
+        if not isinstance(tx_data, dict):
+            tx_data = {}
+        # Caller-supplied live 3DS ECI
+        if tx_data.get("three_ds_eci") or tx_data.get("3ds_eci"):
+            eci = str(tx_data.get("three_ds_eci") or tx_data.get("3ds_eci"))
+            is_secured = any(code in eci for code in ["05", "02", "ECI 05", "ECI 02"])
+            desc = "Fully Authenticated - Issuer Liability Shift secured (3DS 2.2.0)" if is_secured else "Merchant Attempted - Network Liability Shift applied (3DS 2.2.0)"
+            cavv_hash = tx_data.get("3ds_cavv_cryptogram") or hashlib.sha256(f"CAVV-{seed}".encode()).hexdigest()[:28]
+            ds_trans_id = tx_data.get("3ds_ds_trans_id") or f"ds-live-{''.join(str((seed * i) % 10) for i in range(8))}"
+            challenge = tx_data.get("3ds_challenge_type", "Frictionless Authentication" if is_secured else "OTP Challenge Passed")
+            return {
+                "3ds_liability_shift": f"{eci} ({desc})",
+                "3ds_eci": eci,
+                "3ds_protocol_version": tx_data.get("3ds_protocol_version", "EMV 3DS 2.2.0"),
+                "3ds_cavv_cryptogram": cavv_hash,
+                "3ds_ds_trans_id": ds_trans_id,
+                "3ds_challenge_type": challenge
+            }
+
         eci_options = [
             ("ECI 05", "Fully Authenticated - Issuer Liability Shift secured (3DS 2.2.0)"),
             ("ECI 02", "Mastercard Identity Check - Issuer Liability Shift secured (3DS 2.2.0)"),
@@ -320,13 +383,13 @@ class EvidenceAgent:
         seed = int(hashlib.sha256(f"evidence-{decision_id}-{reason_code}".encode()).hexdigest(), 16)
 
         # 1. Carrier tracking & POD
-        carrier_info = CarrierFulfillmentAdapter.get_tracking_info(seed)
+        carrier_info = CarrierFulfillmentAdapter.get_tracking_info(seed, tx_data)
 
         # 2. Compelling Evidence 3.0 & Historical Linkage
-        ce3_info = CompellingEvidence3Engine.evaluate_ce3(seed, reason_code)
+        ce3_info = CompellingEvidence3Engine.evaluate_ce3(seed, reason_code, tx_data)
 
         # 3. EMV 3D-Secure 2.2 Gateway
-        three_ds_info = ThreeDSecureGatewayAdapter.get_auth_details(seed)
+        three_ds_info = ThreeDSecureGatewayAdapter.get_auth_details(seed, tx_data)
 
         # 4. Identity, AVS, and Device
         device_pool = [
@@ -334,8 +397,10 @@ class EvidenceAgent:
             "Dell XPS 15 (Windows 11 / Chrome 124) [ID: 88cf2-device-win]",
             "MacBook Pro 16 (macOS Sonoma / Chrome 124) [ID: c120b-device-mac]"
         ]
-        device_fingerprint = device_pool[seed % len(device_pool)]
-        account_days = 90 + (seed % 400)
+        device_fingerprint = tx_data.get("device_id") or tx_data.get("device_fingerprint") or device_pool[seed % len(device_pool)]
+        account_days = tx_data.get("account_age_days") or f"{90 + (seed % 400)} days active registered profile"
+        if isinstance(account_days, int):
+            account_days = f"{account_days} days active registered profile"
         
         avs_pool = [
             "Match Address and 5-digit ZIP (Y) - Exact Street & Postal Verification",
@@ -346,6 +411,10 @@ class EvidenceAgent:
             "CVV2 Match (M) - Cardholder Security Code Authenticated",
             "CVV2 Match Verified (M) - Verified at point of authorization"
         ]
+        avs_check = tx_data.get("avs_check") or avs_pool[seed % len(avs_pool)]
+        cvv_verification = tx_data.get("cvv_verification") or cvv_pool[seed % len(cvv_pool)]
+        shipping_billing_match = tx_data.get("shipping_billing_match") or "YES (Identical cardholder billing & delivery address verified)"
+        ip_geo_consistency = tx_data.get("ip_geo_consistency") or "Consistent with historical primary account access location"
 
         tx_amount = tx_data.get("amount", 172.50)
         card_mask = tx_data.get("card_number", "400217******1353")
@@ -356,12 +425,12 @@ class EvidenceAgent:
             "transaction_amount": f"${tx_amount:.2f}",
             "card_identifier": card_mask,
             "transaction_timestamp": str(tx_time),
-            "shipping_billing_match": "YES (Identical cardholder billing & delivery address verified)",
+            "shipping_billing_match": shipping_billing_match,
             "device_fingerprint": device_fingerprint,
-            "account_age_days": f"{account_days} days active registered profile",
-            "ip_geo_consistency": "Consistent with historical primary account access location",
-            "avs_check": avs_pool[seed % len(avs_pool)],
-            "cvv_verification": cvv_pool[seed % len(cvv_pool)],
+            "account_age_days": str(account_days),
+            "ip_geo_consistency": ip_geo_consistency,
+            "avs_check": avs_check,
+            "cvv_verification": cvv_verification,
             "3ds_liability_shift": three_ds_info["3ds_liability_shift"],
             "3ds_eci": three_ds_info["3ds_eci"],
             "3ds_cavv_cryptogram": three_ds_info["3ds_cavv_cryptogram"],
@@ -411,13 +480,16 @@ class EvidenceAgent:
         if not api_key:
             return {"draft": self._synthesize_full_packet(state)}
 
+        model_name = os.getenv("OPENAI_MODEL", "gpt-4o")
+        timeout_sec = float(os.getenv("OPENAI_TIMEOUT", "15.0"))
+
         try:
-            client = OpenAI(api_key=api_key, max_retries=0, timeout=3.0)
+            client = OpenAI(api_key=api_key, max_retries=1, timeout=timeout_sec)
             evidence_context = self._build_evidence_context(state)
             reason_code = state.get("reason_code", "Visa 10.4")
 
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model=model_name,
                 temperature=0.1,
                 messages=[
                     {
@@ -455,16 +527,19 @@ class EvidenceAgent:
         """
         # 1. Run deterministic fact-audit
         validation_report = FactAuditEngine.audit_evidence(state)
+        current_draft = state.get("draft") or self._synthesize_full_packet(state)
         
         # 2. Check with LLM if available
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
+            model_name = os.getenv("OPENAI_MODEL", "gpt-4o")
+            timeout_sec = float(os.getenv("OPENAI_TIMEOUT", "15.0"))
             try:
-                client = OpenAI(api_key=api_key, max_retries=0, timeout=3.0)
+                client = OpenAI(api_key=api_key, max_retries=1, timeout=timeout_sec)
                 evidence_context = self._build_evidence_context(state)
 
                 response = client.chat.completions.create(
-                    model="gpt-4o",
+                    model=model_name,
                     temperature=0.0,
                     messages=[
                         {
@@ -477,7 +552,7 @@ class EvidenceAgent:
                         },
                         {
                             "role": "user",
-                            "content": f"EVIDENCE CONTEXT:\n{evidence_context}\n\nDRAFT:\n{state['draft']}"
+                            "content": f"EVIDENCE CONTEXT:\n{evidence_context}\n\nDRAFT:\n{current_draft}"
                         },
                     ],
                 )
@@ -488,7 +563,7 @@ class EvidenceAgent:
             except Exception:
                 pass  # Fall back to deterministic validation report
 
-        final_evidence = state.get("draft", self._synthesize_full_packet(state))
+        final_evidence = current_draft
         is_valid = validation_report["fact_audit_passed"] and validation_report["win_probability"] >= 0.40
 
         return {

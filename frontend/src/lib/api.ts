@@ -17,6 +17,8 @@ export type ScoreResponse = {
   decision: "fight" | "auto_refund";
   top_reasons: [string, number][];
   reason_code?: string;
+  model_version_id?: number | null;
+  model_version_name?: string;
 };
 
 export type DecisionDetail = {
@@ -29,6 +31,10 @@ export type DecisionDetail = {
   top_reasons: [string, number][];
   reason_code?: string;
   evidence_packet: string | null;
+  model_version_id?: number | null;
+  dispute_outcome?: string | null;
+  dispute_outcome_at?: string | null;
+  outcome_notes?: string | null;
   created_at: string;
   transaction?: {
     id: number;
@@ -237,4 +243,16 @@ export const api = {
     ),
   globalImportance: () =>
     req<{ feature_importance: [string, number][]; model_threshold: number; features: string[] }>("/model/global-importance"),
+  recordOutcome: (decisionId: number, outcome: "won" | "lost" | "withdrawn" | "pending", notes?: string) =>
+    req<{ status: string; decision_id: number; dispute_outcome: string; dispute_outcome_at: string; notes: string | null }>(
+      `/decisions/${decisionId}/outcome`,
+      {
+        method: "POST",
+        body: JSON.stringify({ outcome, notes }),
+      }
+    ),
+  outcomesSummary: () =>
+    req<{ total_cases: number; won: number; lost: number; withdrawn: number; pending: number; resolved: number; win_rate: number }>(
+      "/decisions/outcomes/summary"
+    ),
 };

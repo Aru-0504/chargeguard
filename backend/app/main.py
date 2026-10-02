@@ -8,11 +8,17 @@ import json
 import os
 import sys
 import time
+import warnings
 from datetime import datetime
 import joblib
 import shap
 import pandas as pd
 import numpy as np
+
+warnings.filterwarnings("ignore", category=UserWarning, module="langchain_core")
+warnings.filterwarnings("ignore", category=UserWarning, module="shap")
+warnings.filterwarnings("ignore", message=".*InconsistentVersionWarning.*")
+warnings.filterwarnings("ignore", message=".*Could not find the number of physical cores.*")
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -209,6 +215,16 @@ def score_transaction(req: ScoreRequest, db: Session = Depends(get_db)):
 
     reason_code = req.reason_code or "Visa 10.4 - Fraud: Card-Absent Environment"
 
+    # Identify currently active model version
+    active_version_name = metrics_data.get("version")
+    active_mv = None
+    if active_version_name:
+        active_mv = db.query(ModelVersion).filter(ModelVersion.version_name == active_version_name).first()
+    if not active_mv:
+        active_mv = db.query(ModelVersion).filter(ModelVersion.is_active == True).first()
+    
+    model_version_id = active_mv.id if active_mv else None
+
     # 5. Log decision in the decisions table
     decision = Decision(
         transaction_id=txn.id,
@@ -216,7 +232,8 @@ def score_transaction(req: ScoreRequest, db: Session = Depends(get_db)):
         decision=decision_label,
         threshold_used=THRESHOLD,
         top_reasons=json.dumps(reasons),
-        reason_code=reason_code
+        reason_code=reason_code,
+        model_version_id=model_version_id
     )
     db.add(decision)
     db.commit()
@@ -226,7 +243,7 @@ def score_transaction(req: ScoreRequest, db: Session = Depends(get_db)):
     log = AuditLog(
         decision_id=decision.id,
         event="scored",
-        detail=f"score={score:.4f}, decision={decision_label}, reason_code={reason_code}"
+        detail=f"score={score:.4f}, decision={decision_label}, reason_code={reason_code}, model_version={active_version_name or 'default'}"
     )
     db.add(log)
     db.commit()
@@ -237,7 +254,9 @@ def score_transaction(req: ScoreRequest, db: Session = Depends(get_db)):
         "decision": decision_label,
         "top_reasons": reasons,
         "decision_id": decision.id,
-        "reason_code": reason_code
+        "reason_code": reason_code,
+        "model_version_id": model_version_id,
+        "model_version_name": active_version_name or "default"
     }
 
 @app.get("/transactions")
@@ -292,8 +311,72 @@ def get_decision(decision_id: int, db: Session = Depends(get_db)):
         "top_reasons": json.loads(decision.top_reasons),
         "reason_code": getattr(decision, "reason_code", None) or "Visa 10.4 - Fraud: Card-Absent Environment",
         "evidence_packet": decision.evidence_packet,
+        "model_version_id": getattr(decision, "model_version_id", None),
+        "dispute_outcome": getattr(decision, "dispute_outcome", None),
+        "dispute_outcome_at": str(decision.dispute_outcome_at) if getattr(decision, "dispute_outcome_at", None) else None,
+        "outcome_notes": getattr(decision, "outcome_notes", None),
         "created_at": str(decision.created_at),
         "transaction": txn_dict
+    }
+
+class DisputeOutcomeRequest(BaseModel):
+    outcome: str  # "won", "lost", "withdrawn", "pending"
+    notes: Optional[str] = None
+
+@app.post("/decisions/{decision_id}/outcome")
+def record_dispute_outcome(decision_id: int, req: DisputeOutcomeRequest, db: Session = Depends(get_db)):
+    """
+    Record real-world dispute outcome (won, lost, withdrawn, pending)
+    for model evaluation, audit compliance, and retraining feedback.
+    """
+    decision = db.query(Decision).filter(Decision.id == decision_id).first()
+    if not decision:
+        raise HTTPException(status_code=404, detail="Decision not found")
+
+    valid_outcomes = ["won", "lost", "withdrawn", "pending"]
+    norm_outcome = req.outcome.strip().lower()
+    if norm_outcome not in valid_outcomes:
+        raise HTTPException(status_code=400, detail=f"Invalid outcome '{req.outcome}'. Allowed: {valid_outcomes}")
+
+    decision.dispute_outcome = norm_outcome
+    decision.dispute_outcome_at = datetime.utcnow()
+    decision.outcome_notes = req.notes
+    db.commit()
+
+    log = AuditLog(
+        decision_id=decision.id,
+        event="outcome_recorded",
+        detail=f"outcome={norm_outcome}, notes={req.notes or 'None'}"
+    )
+    db.add(log)
+    db.commit()
+
+    return {
+        "status": "success",
+        "decision_id": decision.id,
+        "dispute_outcome": decision.dispute_outcome,
+        "dispute_outcome_at": str(decision.dispute_outcome_at),
+        "notes": decision.outcome_notes
+    }
+
+@app.get("/decisions/outcomes/summary")
+def get_outcomes_summary(db: Session = Depends(get_db)):
+    """Summary of dispute win/loss rates from recorded outcomes."""
+    all_decisions = db.query(Decision).all()
+    won = sum(1 for d in all_decisions if getattr(d, "dispute_outcome", None) == "won")
+    lost = sum(1 for d in all_decisions if getattr(d, "dispute_outcome", None) == "lost")
+    withdrawn = sum(1 for d in all_decisions if getattr(d, "dispute_outcome", None) == "withdrawn")
+    pending = sum(1 for d in all_decisions if getattr(d, "dispute_outcome", None) == "pending" or (d.decision == "fight" and not getattr(d, "dispute_outcome", None)))
+    win_rate = (won / (won + lost)) if (won + lost) > 0 else 0.0
+
+    return {
+        "total_cases": len(all_decisions),
+        "won": won,
+        "lost": lost,
+        "withdrawn": withdrawn,
+        "pending": pending,
+        "resolved": won + lost + withdrawn,
+        "win_rate": round(win_rate, 4)
     }
 
 @app.post("/evidence/{decision_id}")
@@ -326,6 +409,13 @@ def post_evidence(decision_id: int, req: EvidenceRequest, db: Session = Depends(
 
 class GenerateEvidencePayload(BaseModel):
     reason_code: Optional[str] = "Visa 10.4 - Fraud: Card-Absent Environment"
+    carrier_tracking: Optional[str] = None
+    carrier_name: Optional[str] = None
+    carrier_status: Optional[str] = None
+    delivery_signature: Optional[str] = None
+    three_ds_eci: Optional[str] = None
+    device_id: Optional[str] = None
+    prior_orders_count: Optional[int] = None
 
 @app.post("/agent/generate-evidence/{decision_id}")
 def generate_evidence_with_agent(decision_id: int, payload: Optional[GenerateEvidencePayload] = None, db: Session = Depends(get_db)):
@@ -347,7 +437,12 @@ def generate_evidence_with_agent(decision_id: int, payload: Optional[GenerateEvi
         "amount": txn.amount,
         "card_number": txn.card_number,
         "created_at": str(txn.created_at) if txn.created_at else None
-    } if txn else None
+    } if txn else {}
+    if payload:
+        for k in ["carrier_tracking", "carrier_name", "carrier_status", "delivery_signature", "three_ds_eci", "device_id", "prior_orders_count"]:
+            v = getattr(payload, k, None)
+            if v is not None:
+                txn_data[k] = v
 
     try:
         top_reasons = json.loads(decision.top_reasons)
@@ -404,7 +499,12 @@ def stream_evidence_generation(decision_id: int, payload: Optional[GenerateEvide
         "amount": txn.amount,
         "card_number": txn.card_number,
         "created_at": str(txn.created_at) if txn.created_at else None
-    } if txn else None
+    } if txn else {}
+    if payload:
+        for k in ["carrier_tracking", "carrier_name", "carrier_status", "delivery_signature", "three_ds_eci", "device_id", "prior_orders_count"]:
+            v = getattr(payload, k, None)
+            if v is not None:
+                txn_data[k] = v
 
     def event_stream():
         step_generator = evidence_agent.generate_evidence_stream(

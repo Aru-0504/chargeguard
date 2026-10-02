@@ -26,6 +26,9 @@ class Decision(Base):
     reason_code = Column(String, nullable=True)  # Dispute reason code, e.g. "Visa 10.4"
     evidence_packet = Column(Text, nullable=True)
     model_version_id = Column(Integer, nullable=True)  # Foreign key to ModelVersion
+    dispute_outcome = Column(String, nullable=True)    # "won", "lost", "withdrawn", "pending"
+    dispute_outcome_at = Column(DateTime, nullable=True)
+    outcome_notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class ModelVersion(Base):

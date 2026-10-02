@@ -6,9 +6,11 @@ joblib
 shap
 pandas
 numpy
+scikit-learn
 python-dotenv
 lightgbm
 httpx
 langgraph
 openai
+pydantic
 dice-ml
