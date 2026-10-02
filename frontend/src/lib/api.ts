@@ -1,4 +1,8 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+let rawBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+if (rawBase && !rawBase.startsWith("http://") && !rawBase.startsWith("https://")) {
+  rawBase = `https://${rawBase}`;
+}
+const API_BASE = rawBase.replace(/\/$/, "");
 
 export type ScoreRequest = {
   card_number: string;

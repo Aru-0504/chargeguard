@@ -123,42 +123,18 @@ server {
    - `OPENAI_API_KEY`
    - `CORS_ORIGINS`
 
-#### Deploy to Render
+#### Deploy to Render (One-Click Blueprint)
 
-1. Create a `render.yaml` file:
-```yaml
-services:
-  - type: web
-    name: chargeguard-backend
-    env: docker
-    dockerContext: ./backend
-    dockerfilePath: Dockerfile
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: chargeguard-db
-          property: connectionString
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: CORS_ORIGINS
-        value: https://your-app.onrender.com
+The repository includes a ready-to-use [`render.yaml`](file:///c:/Users/aruni/Desktop/ChargeGuard/render.yaml) blueprint configuring the FastAPI backend, Next.js frontend, and PostgreSQL database automatically.
 
-  - type: web
-    name: chargeguard-frontend
-    env: docker
-    dockerContext: ./frontend
-    dockerfilePath: Dockerfile
-    envVars:
-      - key: NEXT_PUBLIC_API_URL
-        value: https://chargeguard-backend.onrender.com
-
-databases:
-  - name: chargeguard-db
-    databaseName: chargeguard
-```
-
-2. Connect repository to Render
-3. Deploy
+1. Go to the [Render Dashboard](https://dashboard.render.com).
+2. Click **New +** -> **Blueprint**.
+3. Select your `chargeguard` GitHub repository.
+4. Render will parse `render.yaml` and configure:
+   - `chargeguard-db`: Managed PostgreSQL database.
+   - `chargeguard-backend`: Docker web service with automatic `$PORT` handling and health check at `/health`.
+   - `chargeguard-frontend`: Node.js Next.js service linked directly to the backend.
+5. Click **Apply** to deploy all services together.
 
 #### Deploy to AWS (ECS)
 
